@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ate-worker
+  labels:
+    app: ate-worker
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: ate-worker
+  template:
+    metadata:
+      labels:
+        app: ate-worker
+    spec:
+      containers:
+        - name: worker
+          image: your-registry/ate-worker:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: WORKER_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: WORKER_HOST
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: HTTP_PORT
+              value: "9101"
+            - name: DISPATCHER_URL
+              value: "http://ate-dispatcher:8081"
+            - name: RABBITMQ_URL
+              value: "amqp://guest:guest@rabbitmq:5672/"
+            - name: SUBTASK_SLEEP_SECONDS
+              value: "2"
+            - name: WORKER_CAPACITY
+              value: "4"
+          ports:
+            - containerPort: 9101
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10

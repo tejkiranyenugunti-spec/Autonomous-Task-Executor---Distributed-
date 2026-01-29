@@ -1,0 +1,203 @@
+# Local development stack for the Autonomous Task Execution Engine.
+# Start: docker compose up --build
+services:
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    hostname: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc localhost 2181"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    hostname: kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: "zookeeper:2181"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    hostname: rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.go
+      args:
+        BINARY: api
+    hostname: api
+    depends_on:
+      kafka:
+        condition: service_healthy
+      dispatcher:
+        condition: service_started
+    ports:
+      - "8080:8080"
+    environment:
+      HTTP_ADDR: ":8080"
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC_SUBTASKS: subtasks
+      DISPATCHER_URL: http://dispatcher:8081
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  dispatcher:
+    build:
+      context: .
+      dockerfile: Dockerfile.go
+      args:
+        BINARY: dispatcher
+    hostname: dispatcher
+    depends_on:
+      kafka:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    ports:
+      - "8081:8081"
+    environment:
+      HTTP_ADDR: ":8081"
+      KAFKA_BROKERS: kafka:29092
+      KAFKA_TOPIC_SUBTASKS: subtasks
+      KAFKA_GROUP_ID: ate-dispatcher
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      HEALTH_POLL_INTERVAL: 5s
+      HEALTH_FAILURE_THRESHOLD: 2
+
+  worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    hostname: worker-1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      dispatcher:
+        condition: service_started
+    ports:
+      - "9101:9101"
+    environment:
+      WORKER_ID: worker-1
+      HTTP_PORT: "9101"
+      DISPATCHER_URL: http://dispatcher:8081
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      SUBTASK_SLEEP_SECONDS: "2"
+      WORKER_CAPACITY: "4"
+
+  worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    hostname: worker-2
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      dispatcher:
+        condition: service_started
+    ports:
+      - "9102:9101"
+    environment:
+      WORKER_ID: worker-2
+      HTTP_PORT: "9101"
+      DISPATCHER_URL: http://dispatcher:8081
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      SUBTASK_SLEEP_SECONDS: "2"
+      WORKER_CAPACITY: "4"
+
+  worker-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    hostname: worker-3
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      dispatcher:
+        condition: service_started
+    ports:
+      - "9103:9101"
+    environment:
+      WORKER_ID: worker-3
+      HTTP_PORT: "9101"
+      DISPATCHER_URL: http://dispatcher:8081
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/
+      SUBTASK_SLEEP_SECONDS: "2"
+      WORKER_CAPACITY: "4"
+
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:latest
+    hostname: kafka-exporter
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command:
+      - "--kafka.server=kafka:29092"
+    ports:
+      - "9308:9308"
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    hostname: prometheus
+    depends_on:
+      - api
+      - dispatcher
+      - kafka-exporter
+    ports:
+      - "9095:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    hostname: grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_DEFAULT_THEME: dark
+    volumes:
+      - ./monitoring/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - ./monitoring/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./monitoring/grafana-dashboard.json:/var/lib/grafana/dashboards/ate-dashboard.json:ro

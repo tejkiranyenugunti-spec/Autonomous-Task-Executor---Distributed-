@@ -1,0 +1,7 @@
+FROM python:3.11-slim
+WORKDIR /app
+COPY workers/requirements.txt /app/workers/requirements.txt
+RUN pip install --no-cache-dir -r /app/workers/requirements.txt
+COPY workers/worker.py /app/workers/worker.py
+ENV PYTHONUNBUFFERED=1
+CMD ["python", "/app/workers/worker.py"]
